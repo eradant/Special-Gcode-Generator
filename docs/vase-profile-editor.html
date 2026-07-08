@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vase Profile Editor — Prototype</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --panel-border: #2c3038;
+    --text: #e8e9ec;
+    --text-dim: #9aa0ab;
+    --accent: #5eb4ff;
+    --accent-2: #ff9a5e;
+    --axis: #3a3f4a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--panel-border);
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 16px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+  }
+  header p {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+  main {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+  #editor-pane, #preview-pane {
+    flex: 1 1 50%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+  #editor-pane { border-right: 1px solid var(--panel-border); }
+  .pane-label {
+    position: absolute;
+    top: 10px;
+    left: 14px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-dim);
+    z-index: 2;
+    pointer-events: none;
+  }
+  #profileCanvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: default;
+    touch-action: none;
+  }
+  #three-canvas-wrap {
+    flex: 1;
+    min-height: 0;
+  }
+  #three-canvas-wrap canvas {
+    display: block;
+  }
+  #controls {
+    flex-shrink: 0;
+    border-top: 1px solid var(--panel-border);
+    background: var(--panel);
+    padding: 12px 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    align-items: center;
+  }
+  .control {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 90px;
+  }
+  .control label {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-dim);
+  }
+  .control .value {
+    font-size: 11px;
+    color: var(--text);
+  }
+  input[type="range"] {
+    width: 140px;
+  }
+  input[type="number"] {
+    width: 64px;
+    background: #11131700;
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 12px;
+  }
+  button {
+    background: #262a33;
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button:hover { background: #2f333e; border-color: #444a56; }
+  button.primary {
+    background: var(--accent);
+    color: #0c1420;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  button.primary:hover { filter: brightness(1.08); }
+  #hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-left: auto;
+    max-width: 260px;
+    text-align: right;
+  }
+  #stats {
+    position: absolute;
+    bottom: 10px;
+    left: 14px;
+    font-size: 11px;
+    color: var(--text-dim);
+    z-index: 2;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Vase Profile Editor</h1>
+    <p>Prototype — curve editor + live 3D revolve preview. No texture, bending, or G-code yet.</p>
+  </header>
+  <main>
+    <div id="editor-pane">
+      <div class="pane-label">Profile (drag the dots)</div>
+      <canvas id="profileCanvas"></canvas>
+      <div id="stats"></div>
+    </div>
+    <div id="preview-pane">
+      <div class="pane-label">3D Preview</div>
+      <div id="three-canvas-wrap"></div>
+    </div>
+  </main>
+  <div id="controls">
+    <div class="control">
+      <label>Height (mm)</label>
+      <input type="range" id="heightSlider" min="40" max="300" step="1" value="150" />
+      <span class="value" id="heightValue">150 mm</span>
+    </div>
+    <div class="control">
+      <label>Max radius (mm)</label>
+      <input type="range" id="maxRadiusSlider" min="30" max="120" step="1" value="70" />
+      <span class="value" id="maxRadiusValue">70 mm</span>
+    </div>
+    <div class="control">
+      <label>Control points</label>
+      <input type="range" id="pointCountSlider" min="3" max="14" step="1" value="6" />
+      <span class="value" id="pointCountValue">6</span>
+    </div>
+    <div class="control">
+      <label>Revolve segments</label>
+      <input type="range" id="segmentsSlider" min="16" max="128" step="8" value="64" />
+      <span class="value" id="segmentsValue">64</span>
+    </div>
+    <button id="randomizeBtn">Randomize</button>
+    <button id="resetBtn">Reset profile</button>
+    <div id="hint">Drag dots left/right to set radius at each height. Vertical spacing is fixed for now (evenly spaced across the height).</div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+// Control points are stored as an array of radii (mm), one per evenly spaced
+// height slot from base (index 0) to top (index N-1). This mirrors the plan's
+// "profile capture" step: a resampled radius(z) function, kept simple for the
+// editor by fixing height positions and only letting the user drag radius.
+
+const state = {
+  heightMm: 150,
+  maxRadiusMm: 70,
+  pointCount: 6,
+  segments: 64,
+  radii: [], // length === pointCount, values in mm
+  selectedIndex: -1,
+  draggingIndex: -1,
+};
+
+function defaultRadiiForCount(n, maxR) {
+  // A gentle default vase-like silhouette: narrow base, bulge in the lower
+  // third, slight neck, flared lip. Generated procedurally so it adapts to
+  // any point count.
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 0 : i / (n - 1); // 0 at base, 1 at top
+    const bulge = Math.sin(Math.PI * Math.min(t / 0.6, 1)) * 1.0; // rises then falls by t=0.6
+    const neck = t > 0.6 ? (t - 0.6) / 0.4 : 0; // 0..1 from 0.6..1.0
+    const flare = neck * neck * 0.5;
+    let r = 0.35 + bulge * 0.65 - neck * 0.35 + flare;
+    r = Math.max(0.12, r);
+    out.push(+(r * maxR).toFixed(2));
+  }
+  return out;
+}
+
+state.radii = defaultRadiiForCount(state.pointCount, state.maxRadiusMm);
+
+// ---------------------------------------------------------------------------
+// Catmull-Rom spline resampling: radii[] (evenly spaced in height) -> a dense
+// list of {height, radius} samples used for both the 2D curve stroke and the
+// 3D lathe geometry.
+// ---------------------------------------------------------------------------
+function catmullRom(p0, p1, p2, p3, t) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return 0.5 * (
+    (2 * p1) +
+    (-p0 + p2) * t +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+  );
+}
+
+function resampleProfile(radii, heightMm, samplesPerSegment = 20) {
+  const n = radii.length;
+  const points = []; // { z, r } with z in mm from 0 (base) to heightMm (top)
+  if (n === 1) {
+    points.push({ z: 0, r: radii[0] });
+    points.push({ z: heightMm, r: radii[0] });
+    return points;
+  }
+  const segCount = n - 1;
+  for (let seg = 0; seg < segCount; seg++) {
+    const p0 = radii[Math.max(0, seg - 1)];
+    const p1 = radii[seg];
+    const p2 = radii[seg + 1];
+    const p3 = radii[Math.min(n - 1, seg + 2)];
+    const stepsThisSeg = seg === segCount - 1 ? samplesPerSegment + 1 : samplesPerSegment;
+    for (let s = 0; s < stepsThisSeg; s++) {
+      const t = s / samplesPerSegment;
+      const r = Math.max(0.1, catmullRom(p0, p1, p2, p3, t));
+      const zt = (seg + t) / segCount;
+      points.push({ z: zt * heightMm, r });
+    }
+  }
+  return points;
+}
+
+// ---------------------------------------------------------------------------
+// 2D Profile Editor (canvas)
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById("profileCanvas");
+const ctx = canvas.getContext("2d");
+const statsEl = document.getElementById("stats");
+
+let canvasWidth = 0, canvasHeight = 0;
+const PADDING_TOP = 40, PADDING_BOTTOM = 30, PADDING_LEFT = 50, PADDING_RIGHT = 40;
+
+function resizeCanvas() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvasWidth = rect.width;
+  canvasHeight = rect.height;
+  canvas.width = Math.round(canvasWidth * dpr);
+  canvas.height = Math.round(canvasHeight * dpr);
+  canvas.style.width = canvasWidth + "px";
+  canvas.style.height = canvasHeight + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+// Mapping helpers: mm-space (radius r, height z) <-> canvas pixel space.
+// Axis (r=0) sits at PADDING_LEFT from the left edge; base (z=0) sits near
+// the bottom, top (z=heightMm) near the top.
+function plotArea() {
+  const w = canvasWidth - PADDING_LEFT - PADDING_RIGHT;
+  const h = canvasHeight - PADDING_TOP - PADDING_BOTTOM;
+  return { w: Math.max(10, w), h: Math.max(10, h) };
+}
+
+function rToX(r) {
+  const { w } = plotArea();
+  const maxR = state.maxRadiusMm * 1.15; // headroom so points don't hit the edge
+  return PADDING_LEFT + (r / maxR) * w;
+}
+function xToR(x) {
+  const { w } = plotArea();
+  const maxR = state.maxRadiusMm * 1.15;
+  return Math.max(1, Math.min(maxR, ((x - PADDING_LEFT) / w) * maxR));
+}
+function zToY(z) {
+  const { h } = plotArea();
+  return PADDING_TOP + h - (z / state.heightMm) * h;
+}
+function indexToZ(i) {
+  return state.pointCount === 1 ? 0 : (i / (state.pointCount - 1)) * state.heightMm;
+}
+
+const POINT_RADIUS = 7;
+const HIT_RADIUS = 14;
+
+function drawProfileEditor() {
+  ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+  // central axis line
+  const axisX = rToX(0);
+  ctx.strokeStyle = getCssVar("--axis");
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(axisX, PADDING_TOP - 10);
+  ctx.lineTo(axisX, canvasHeight - PADDING_BOTTOM + 10);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // base line
+  const baseY = zToY(0);
+  const topY = zToY(state.heightMm);
+  ctx.strokeStyle = "#2a2e37";
+  ctx.beginPath();
+  ctx.moveTo(axisX, baseY);
+  ctx.lineTo(canvasWidth - PADDING_RIGHT, baseY);
+  ctx.stroke();
+
+  // smooth profile curve
+  const samples = resampleProfile(state.radii, state.heightMm, 24);
+  ctx.strokeStyle = getCssVar("--accent");
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  samples.forEach((pt, i) => {
+    const x = rToX(pt.r);
+    const y = zToY(pt.z);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // mirrored faint curve on the axis side, just for visual context of "vase-ness"
+  ctx.strokeStyle = "rgba(94,180,255,0.18)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  samples.forEach((pt, i) => {
+    const mirroredX = 2 * axisX - rToX(pt.r);
+    const y = zToY(pt.z);
+    if (i === 0) ctx.moveTo(mirroredX, y); else ctx.lineTo(mirroredX, y);
+  });
+  ctx.stroke();
+
+  // control point handles
+  for (let i = 0; i < state.pointCount; i++) {
+    const x = rToX(state.radii[i]);
+    const y = zToY(indexToZ(i));
+    const isSelected = i === state.selectedIndex;
+    const isDragging = i === state.draggingIndex;
+
+    ctx.beginPath();
+    ctx.moveTo(axisX, y);
+    ctx.lineTo(x, y);
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(x, y, isDragging ? POINT_RADIUS + 2 : POINT_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = isDragging ? getCssVar("--accent-2") : (isSelected ? "#ffffff" : getCssVar("--accent"));
+    ctx.fill();
+    ctx.strokeStyle = "#0c1420";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  statsEl.textContent = `${state.pointCount} control points · height ${state.heightMm}mm · max radius ${state.maxRadiusMm}mm`;
+}
+
+function getCssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function hitTestPoint(px, py) {
+  for (let i = 0; i < state.pointCount; i++) {
+    const x = rToX(state.radii[i]);
+    const y = zToY(indexToZ(i));
+    const dx = px - x, dy = py - y;
+    if (Math.sqrt(dx * dx + dy * dy) <= HIT_RADIUS) return i;
+  }
+  return -1;
+}
+
+function canvasPos(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+  const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+  return { x: clientX - rect.left, y: clientY - rect.top };
+}
+
+canvas.addEventListener("pointerdown", (evt) => {
+  const { x, y } = canvasPos(evt);
+  const idx = hitTestPoint(x, y);
+  if (idx >= 0) {
+    state.draggingIndex = idx;
+    state.selectedIndex = idx;
+    canvas.setPointerCapture(evt.pointerId);
+    drawProfileEditor();
+  }
+});
+
+canvas.addEventListener("pointermove", (evt) => {
+  if (state.draggingIndex < 0) return;
+  const { x } = canvasPos(evt);
+  const r = +xToR(x).toFixed(2);
+  state.radii[state.draggingIndex] = r;
+  drawProfileEditor();
+  scheduleMeshUpdate();
+});
+
+function endDrag(evt) {
+  if (state.draggingIndex >= 0) {
+    state.draggingIndex = -1;
+    drawProfileEditor();
+    scheduleMeshUpdate(true);
+  }
+}
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+canvas.addEventListener("pointerleave", (evt) => {
+  if (state.draggingIndex < 0) drawProfileEditor();
+});
+
+// ---------------------------------------------------------------------------
+// Three.js 3D preview
+// ---------------------------------------------------------------------------
+const wrap = document.getElementById("three-canvas-wrap");
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14161a);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+camera.position.set(180, 140, 220);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+wrap.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 60, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.update();
+
+const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+scene.add(ambient);
+const key = new THREE.DirectionalLight(0xffffff, 1.1);
+key.position.set(150, 300, 150);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0x88aaff, 0.35);
+fill.position.set(-150, 80, -100);
+scene.add(fill);
+
+const grid = new THREE.GridHelper(400, 20, 0x333844, 0x22262e);
+scene.add(grid);
+
+const material = new THREE.MeshStandardMaterial({
+  color: 0x5eb4ff,
+  metalness: 0.05,
+  roughness: 0.45,
+  side: THREE.DoubleSide,
+  flatShading: false,
+});
+
+let vaseMesh = null;
+
+function buildLatheGeometry() {
+  const samples = resampleProfile(state.radii, state.heightMm, 20);
+  // THREE.LatheGeometry expects points as Vector2(x=radius, y=height), height ascending.
+  const points = samples.map((pt) => new THREE.Vector2(Math.max(0.1, pt.r), pt.z));
+  return new THREE.LatheGeometry(points, state.segments);
+}
+
+function rebuildMesh() {
+  const geometry = buildLatheGeometry();
+  geometry.computeVertexNormals();
+  if (vaseMesh) {
+    vaseMesh.geometry.dispose();
+    vaseMesh.geometry = geometry;
+  } else {
+    vaseMesh = new THREE.Mesh(geometry, material);
+    scene.add(vaseMesh);
+  }
+  // Recenter camera target roughly on the vase's mid-height
+  controls.target.set(0, state.heightMm * 0.5, 0);
+}
+
+let meshUpdatePending = false;
+function scheduleMeshUpdate() {
+  if (meshUpdatePending) return;
+  meshUpdatePending = true;
+  requestAnimationFrame(() => {
+    meshUpdatePending = false;
+    rebuildMesh();
+  });
+}
+
+function resizeRenderer() {
+  const rect = wrap.getBoundingClientRect();
+  const w = Math.max(10, rect.width);
+  const h = Math.max(10, rect.height);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// ---------------------------------------------------------------------------
+// Controls panel wiring
+// ---------------------------------------------------------------------------
+const heightSlider = document.getElementById("heightSlider");
+const heightValue = document.getElementById("heightValue");
+const maxRadiusSlider = document.getElementById("maxRadiusSlider");
+const maxRadiusValue = document.getElementById("maxRadiusValue");
+const pointCountSlider = document.getElementById("pointCountSlider");
+const pointCountValue = document.getElementById("pointCountValue");
+const segmentsSlider = document.getElementById("segmentsSlider");
+const segmentsValue = document.getElementById("segmentsValue");
+const randomizeBtn = document.getElementById("randomizeBtn");
+const resetBtn = document.getElementById("resetBtn");
+
+heightSlider.addEventListener("input", () => {
+  state.heightMm = +heightSlider.value;
+  heightValue.textContent = `${state.heightMm} mm`;
+  drawProfileEditor();
+  scheduleMeshUpdate();
+});
+
+maxRadiusSlider.addEventListener("input", () => {
+  const newMax = +maxRadiusSlider.value;
+  const scale = newMax / state.maxRadiusMm;
+  state.radii = state.radii.map((r) => +(r * scale).toFixed(2));
+  state.maxRadiusMm = newMax;
+  maxRadiusValue.textContent = `${state.maxRadiusMm} mm`;
+  drawProfileEditor();
+  scheduleMeshUpdate();
+});
+
+pointCountSlider.addEventListener("input", () => {
+  const newCount = +pointCountSlider.value;
+  resamplePointCount(newCount);
+  pointCountValue.textContent = `${newCount}`;
+  drawProfileEditor();
+  scheduleMeshUpdate();
+});
+
+segmentsSlider.addEventListener("input", () => {
+  state.segments = +segmentsSlider.value;
+  segmentsValue.textContent = `${state.segments}`;
+  scheduleMeshUpdate();
+});
+
+function resamplePointCount(newCount) {
+  // Re-derive radii at the new evenly-spaced heights by sampling the current
+  // smooth curve, so reshaping point count doesn't reset the design.
+  const oldSamples = resampleProfile(state.radii, state.heightMm, 40);
+  const newRadii = [];
+  for (let i = 0; i < newCount; i++) {
+    const z = newCount === 1 ? 0 : (i / (newCount - 1)) * state.heightMm;
+    // find nearest sample
+    let best = oldSamples[0];
+    let bestDist = Infinity;
+    for (const s of oldSamples) {
+      const d = Math.abs(s.z - z);
+      if (d < bestDist) { bestDist = d; best = s; }
+    }
+    newRadii.push(+best.r.toFixed(2));
+  }
+  state.pointCount = newCount;
+  state.radii = newRadii;
+  if (state.selectedIndex >= newCount) state.selectedIndex = -1;
+}
+
+randomizeBtn.addEventListener("click", () => {
+  const n = state.pointCount;
+  const radii = [];
+  let prev = state.maxRadiusMm * (0.25 + Math.random() * 0.2);
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 0 : i / (n - 1);
+    const wobble = (Math.random() - 0.5) * state.maxRadiusMm * 0.5;
+    const envelope = Math.sin(Math.PI * t) * state.maxRadiusMm * 0.6; // fatter mid, thinner ends
+    let r = state.maxRadiusMm * 0.3 + envelope * 0.6 + wobble * 0.5;
+    r = Math.max(4, Math.min(state.maxRadiusMm * 1.1, r));
+    radii.push(+r.toFixed(2));
+    prev = r;
+  }
+  state.radii = radii;
+  drawProfileEditor();
+  scheduleMeshUpdate();
+});
+
+resetBtn.addEventListener("click", () => {
+  state.radii = defaultRadiiForCount(state.pointCount, state.maxRadiusMm);
+  drawProfileEditor();
+  scheduleMeshUpdate();
+});
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+function handleResize() {
+  resizeCanvas();
+  drawProfileEditor();
+  resizeRenderer();
+}
+
+window.addEventListener("resize", handleResize);
+
+resizeCanvas();
+drawProfileEditor();
+resizeRenderer();
+rebuildMesh();
+animate();
+</script>
+</body>
+</html>
