@@ -139,6 +139,43 @@
     font-weight: 600;
   }
   button.primary:hover { filter: brightness(1.08); }
+  select {
+    background: #262a33;
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 12px;
+  }
+  select option:disabled { color: #5a606b; }
+  .controls-break {
+    flex-basis: 100%;
+    height: 0;
+    border-top: 1px dashed var(--panel-border);
+  }
+  #toolpathToggle {
+    position: absolute;
+    top: 8px;
+    right: 14px;
+    z-index: 2;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  #gcodeStats {
+    position: absolute;
+    bottom: 30px;
+    left: 14px;
+    font-size: 11px;
+    color: var(--text);
+    z-index: 2;
+    line-height: 1.5;
+    white-space: pre-line;
+  }
   #hint {
     font-size: 11px;
     color: var(--text-dim);
@@ -161,16 +198,18 @@
 <div id="app">
   <header>
     <h1>Vase Profile Editor</h1>
-    <p>Prototype — curve editor + live 3D revolve preview. No texture, bending, or G-code yet.</p>
+    <p>Prototype — curve editor, live 3D revolve preview, spiral G-code export (Marlin). No texture or bending yet.</p>
   </header>
   <main>
     <div id="editor-pane">
       <div class="pane-label">Profile (drag the dots)</div>
       <canvas id="profileCanvas"></canvas>
+      <div id="gcodeStats"></div>
       <div id="stats"></div>
     </div>
     <div id="preview-pane">
       <div class="pane-label">3D Preview</div>
+      <label id="toolpathToggle"><input type="checkbox" id="showToolpathCheck" /> Show toolpath</label>
       <div id="three-canvas-wrap"></div>
     </div>
   </main>
@@ -198,6 +237,55 @@
     <button id="randomizeBtn">Randomize</button>
     <button id="resetBtn">Reset profile</button>
     <div id="hint">Drag dots left/right to set radius at each height. Vertical spacing is fixed for now (evenly spaced across the height).</div>
+    <div class="controls-break"></div>
+    <div class="control">
+      <label>Layer height (mm)</label>
+      <input type="range" id="layerHeightSlider" min="0.08" max="0.4" step="0.01" value="0.2" />
+      <span class="value" id="layerHeightValue">0.20 mm</span>
+    </div>
+    <div class="control">
+      <label>Nozzle Ø (mm)</label>
+      <input type="number" id="nozzleDiaInput" min="0.2" max="1.0" step="0.05" value="0.4" />
+    </div>
+    <div class="control">
+      <label>Line width (mm)</label>
+      <input type="number" id="lineWidthInput" min="0.3" max="1.2" step="0.01" value="0.44" />
+    </div>
+    <div class="control">
+      <label>Filament Ø (mm)</label>
+      <input type="number" id="filamentDiaInput" min="1" max="3" step="0.05" value="1.75" />
+    </div>
+    <div class="control">
+      <label>Print speed (mm/s)</label>
+      <input type="range" id="printSpeedSlider" min="10" max="150" step="1" value="40" />
+      <span class="value" id="printSpeedValue">40 mm/s</span>
+    </div>
+    <div class="control">
+      <label>First layer (mm/s)</label>
+      <input type="range" id="firstLayerSpeedSlider" min="5" max="60" step="1" value="20" />
+      <span class="value" id="firstLayerSpeedValue">20 mm/s</span>
+    </div>
+    <div class="control">
+      <label>Base layers</label>
+      <input type="number" id="baseLayersInput" min="0" max="10" step="1" value="3" />
+    </div>
+    <div class="control">
+      <label>Bed temp (°C)</label>
+      <input type="number" id="bedTempInput" min="0" max="120" step="1" value="60" />
+    </div>
+    <div class="control">
+      <label>Nozzle temp (°C)</label>
+      <input type="number" id="nozzleTempInput" min="150" max="300" step="1" value="200" />
+    </div>
+    <div class="control">
+      <label>Firmware</label>
+      <select id="firmwareSelect">
+        <option value="marlin" selected>Marlin</option>
+        <option value="klipper" disabled>Klipper (coming soon)</option>
+        <option value="reprap" disabled>RepRapFirmware (coming soon)</option>
+      </select>
+    </div>
+    <button id="exportGcodeBtn" class="primary">Export G-code</button>
   </div>
 </div>
 
@@ -290,6 +378,210 @@ function resampleProfile(radii, heightMm, samplesPerSegment = 20) {
     }
   }
   return points;
+}
+
+// ---------------------------------------------------------------------------
+// Print parameters + G-code pipeline (MVP step 2: spiral toolpath + export)
+// ---------------------------------------------------------------------------
+
+const printParams = {
+  layerHeight: 0.2,       // mm
+  nozzleDiameter: 0.4,    // mm
+  filamentDiameter: 1.75, // mm
+  lineWidth: 0.44,        // mm — tracks nozzle × 1.1 until the user edits it
+  lineWidthTouched: false,
+  printSpeed: 40,         // mm/s
+  firstLayerSpeed: 20,    // mm/s
+  baseLayers: 3,
+  firmware: "marlin",
+  bedTemp: 60,            // °C
+  nozzleTemp: 200,        // °C
+};
+
+// The part is centered on the bed. Fixed bed size is an MVP assumption (no
+// printer profiles yet); it's recorded in the G-code header for traceability.
+const BED = { x: 220, y: 220 };
+const PLA_DENSITY_G_CM3 = 1.24; // filament weight stat is PLA-only for now
+
+// Linear interpolation of radius at an arbitrary height over the resampled
+// profile (which is ordered by ascending z).
+function makeRadiusInterpolator(profile) {
+  const last = profile[profile.length - 1];
+  return (z) => {
+    if (z <= profile[0].z) return profile[0].r;
+    if (z >= last.z) return last.r;
+    let lo = 0, hi = profile.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (profile[mid].z <= z) lo = mid; else hi = mid;
+    }
+    const a = profile[lo], b = profile[hi];
+    const t = (z - a.z) / Math.max(1e-9, b.z - a.z);
+    return a.r + (b.r - a.r) * t;
+  };
+}
+
+// Ordered toolpath points {x, y, z, r} (mm, part-centered, z up):
+//  - base layers: one closed perimeter loop per layer at constant z (simplest
+//    acceptable base for v1 — no real infill pattern yet)
+//  - body: a single continuous spiral, z rising one layerHeight per revolution
+//    (vase mode: no stepped layers, no seam)
+// Angular resolution reuses state.segments so the revolve preview's faceting
+// matches the printed path. At the default 64 segments, chord deviation at a
+// 70 mm radius is under 0.1 mm — below what FDM resolves, so no separate
+// resolution control is needed yet.
+function generateSpiralToolpath(state, p) {
+  const segments = state.segments;
+  const radiusAt = makeRadiusInterpolator(resampleProfile(state.radii, state.heightMm, 20));
+  const lh = p.layerHeight;
+  const points = [];
+
+  let baseTop = 0;
+  for (let layer = 1; layer <= p.baseLayers; layer++) {
+    const z = layer * lh;
+    if (z > state.heightMm + 1e-9) break;
+    baseTop = z;
+    const r = radiusAt(z);
+    // s spans 0..segments so each loop closes on its own seam; moving to the
+    // next layer's s=0 point is then a short vertical hop at the seam.
+    for (let s = 0; s <= segments; s++) {
+      const theta = (s / segments) * Math.PI * 2;
+      points.push({ x: r * Math.cos(theta), y: r * Math.sin(theta), z, r });
+    }
+  }
+
+  const z0 = p.baseLayers > 0 ? baseTop : lh;
+  if (z0 < state.heightMm - 1e-9) {
+    const dz = lh / segments;
+    const totalSteps = Math.ceil((state.heightMm - z0) / dz);
+    // If base loops were emitted, their last point already sits at (θ=0, z0),
+    // so the spiral starts one step in; otherwise emit the start point too.
+    for (let i = p.baseLayers > 0 ? 1 : 0; i <= totalSteps; i++) {
+      const z = Math.min(z0 + i * dz, state.heightMm);
+      const theta = ((i % segments) / segments) * Math.PI * 2;
+      const r = radiusAt(z);
+      points.push({ x: r * Math.cos(theta), y: r * Math.sin(theta), z, r });
+    }
+  }
+  return points;
+}
+
+// Deposited cross-section: the "stadium" (rounded-rectangle) model slicers
+// use — a (lineWidth - layerHeight) wide rectangle plus two semicircular caps
+// of diameter layerHeight. Closer to observed extrusion than a plain
+// rectangle; swap here if real-print calibration shows over/under-extrusion.
+function depositedArea(p) {
+  const lh = p.layerHeight;
+  const lw = Math.max(p.lineWidth, lh); // model requires lineWidth >= layerHeight
+  return lh * (lw - lh) + Math.PI * (lh / 2) ** 2;
+}
+
+function filamentArea(p) {
+  return Math.PI * (p.filamentDiameter / 2) ** 2;
+}
+
+// Cumulative E values (absolute extrusion mode — M82) parallel to points[].
+function computeExtrusion(points, p) {
+  const area = depositedArea(p);
+  const fArea = filamentArea(p);
+  const eValues = new Array(points.length);
+  let e = 0;
+  eValues[0] = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    e += (len * area) / fArea;
+    eValues[i] = e;
+  }
+  return eValues;
+}
+
+// Fixed-precision G-code number: trailing zeros stripped to keep files small.
+function fmt(n, decimals = 3) {
+  let s = n.toFixed(decimals);
+  if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, "");
+  return s;
+}
+
+// Marlin flavor only for v1 (the firmware dropdown enforces this).
+function assembleGCode(points, eValues, p) {
+  const ox = BED.x / 2, oy = BED.y / 2;
+  const lh = p.layerHeight;
+  const heightMm = points[points.length - 1].z;
+  let maxR = 0;
+  for (const pt of points) maxR = Math.max(maxR, pt.r);
+
+  const lines = [
+    "; Spiral vase G-code — generated by vase-profile-editor (prototype)",
+    `; generated: ${new Date().toISOString()}`,
+    "; firmware flavor: Marlin",
+    `; profile: height ${fmt(heightMm)} mm, max radius ${fmt(maxR, 2)} mm, ${points.length} toolpath points`,
+    `; layer height ${fmt(lh, 2)} mm, line width ${fmt(p.lineWidth, 2)} mm, nozzle ${fmt(p.nozzleDiameter, 2)} mm, filament ${fmt(p.filamentDiameter, 2)} mm`,
+    `; speeds: print ${p.printSpeed} mm/s, first layer ${p.firstLayerSpeed} mm/s; base layers: ${p.baseLayers}`,
+    `; temps: nozzle ${p.nozzleTemp}C, bed ${p.bedTemp}C`,
+    `; bed assumed ${BED.x}x${BED.y} mm, part centered at X${ox} Y${oy}`,
+    ";",
+    "G21 ; units: mm",
+    "G90 ; absolute XYZ",
+    "M82 ; absolute E",
+    "G28 ; home all axes",
+    `M140 S${p.bedTemp} ; set bed temp`,
+    `M190 S${p.bedTemp} ; wait for bed temp`,
+    `M104 S${p.nozzleTemp} ; set nozzle temp`,
+    `M109 S${p.nozzleTemp} ; wait for nozzle temp`,
+    "G92 E0 ; reset extruder",
+  ];
+
+  // Prime line along the left edge of the bed
+  const primeX = 10, primeY0 = 20, primeY1 = 120;
+  const primeE = ((primeY1 - primeY0) * depositedArea(p)) / filamentArea(p);
+  lines.push(
+    "; prime line",
+    "G1 Z2 F1200",
+    `G1 X${primeX} Y${primeY0} F6000`,
+    `G1 Z${fmt(lh)} F1200`,
+    `G1 X${primeX} Y${primeY1} E${fmt(primeE, 5)} F${p.firstLayerSpeed * 60}`,
+    "G92 E0 ; reset extruder after prime",
+  );
+
+  // The only travel move in the file: prime line -> toolpath start. From here
+  // it's one continuous extruded line — no travels, no retractions, by design.
+  const p0 = points[0];
+  lines.push(
+    "; travel to spiral start",
+    `G1 X${fmt(p0.x + ox)} Y${fmt(p0.y + oy)} F6000`,
+    `G1 Z${fmt(p0.z)} F1200`,
+    "; ---- toolpath body ----",
+  );
+
+  const fFirst = Math.round(p.firstLayerSpeed * 60);
+  const fPrint = Math.round(p.printSpeed * 60);
+  let fanOn = false;
+  for (let i = 1; i < points.length; i++) {
+    const pt = points[i];
+    const firstLayer = pt.z <= lh + 1e-6;
+    if (!firstLayer && !fanOn) {
+      lines.push("M106 S255 ; part cooling fan on after first layer");
+      fanOn = true;
+    }
+    lines.push(
+      `G1 X${fmt(pt.x + ox)} Y${fmt(pt.y + oy)} Z${fmt(pt.z)} E${fmt(eValues[i], 5)} F${firstLayer ? fFirst : fPrint}`
+    );
+  }
+
+  lines.push(
+    "; ---- end ----",
+    "M107 ; fan off",
+    "M104 S0 ; nozzle off",
+    "M140 S0 ; bed off",
+    "G91 ; relative",
+    "G1 Z5 F1200 ; lift",
+    "G90 ; absolute",
+    `G1 X10 Y${BED.y - 10} F6000 ; present print`,
+    "M84 ; disable steppers",
+    "",
+  );
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +823,7 @@ function rebuildMesh() {
   }
   // Recenter camera target roughly on the vase's mid-height
   controls.target.set(0, state.heightMm * 0.5, 0);
+  syncToolpathView();
 }
 
 let meshUpdatePending = false;
@@ -542,6 +835,40 @@ function scheduleMeshUpdate() {
     rebuildMesh();
   });
 }
+
+// --- Toolpath view: the generated spiral points as a THREE.Line, shown
+// instead of the shaded mesh so the actual print path can be inspected. ---
+const showToolpathCheck = document.getElementById("showToolpathCheck");
+let toolpathLine = null;
+
+function rebuildToolpathLine() {
+  const pts = generateSpiralToolpath(state, printParams);
+  const positions = new Float32Array(pts.length * 3);
+  for (let i = 0; i < pts.length; i++) {
+    // Print space is z-up; the three.js scene is y-up.
+    positions[i * 3] = pts[i].x;
+    positions[i * 3 + 1] = pts[i].z;
+    positions[i * 3 + 2] = -pts[i].y;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  if (toolpathLine) {
+    toolpathLine.geometry.dispose();
+    toolpathLine.geometry = geometry;
+  } else {
+    toolpathLine = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: 0xff9a5e }));
+    scene.add(toolpathLine);
+  }
+}
+
+function syncToolpathView() {
+  const show = showToolpathCheck.checked;
+  if (show) rebuildToolpathLine();
+  if (toolpathLine) toolpathLine.visible = show;
+  if (vaseMesh) vaseMesh.visible = !show;
+}
+
+showToolpathCheck.addEventListener("change", syncToolpathView);
 
 function resizeRenderer() {
   const rect = wrap.getBoundingClientRect();
@@ -646,6 +973,143 @@ resetBtn.addEventListener("click", () => {
   state.radii = defaultRadiiForCount(state.pointCount, state.maxRadiusMm);
   drawProfileEditor();
   scheduleMeshUpdate();
+});
+
+// ---------------------------------------------------------------------------
+// Print parameter wiring + G-code export
+// ---------------------------------------------------------------------------
+const layerHeightSlider = document.getElementById("layerHeightSlider");
+const layerHeightValue = document.getElementById("layerHeightValue");
+const nozzleDiaInput = document.getElementById("nozzleDiaInput");
+const lineWidthInput = document.getElementById("lineWidthInput");
+const filamentDiaInput = document.getElementById("filamentDiaInput");
+const printSpeedSlider = document.getElementById("printSpeedSlider");
+const printSpeedValue = document.getElementById("printSpeedValue");
+const firstLayerSpeedSlider = document.getElementById("firstLayerSpeedSlider");
+const firstLayerSpeedValue = document.getElementById("firstLayerSpeedValue");
+const baseLayersInput = document.getElementById("baseLayersInput");
+const bedTempInput = document.getElementById("bedTempInput");
+const nozzleTempInput = document.getElementById("nozzleTempInput");
+const firmwareSelect = document.getElementById("firmwareSelect");
+const exportGcodeBtn = document.getElementById("exportGcodeBtn");
+const gcodeStatsEl = document.getElementById("gcodeStats");
+
+function numberInput(el, min, max, fallback) {
+  const v = +el.value;
+  if (!Number.isFinite(v)) return fallback;
+  return Math.max(min, Math.min(max, v));
+}
+
+layerHeightSlider.addEventListener("input", () => {
+  printParams.layerHeight = +layerHeightSlider.value;
+  layerHeightValue.textContent = `${printParams.layerHeight.toFixed(2)} mm`;
+  syncToolpathView();
+});
+
+nozzleDiaInput.addEventListener("input", () => {
+  printParams.nozzleDiameter = numberInput(nozzleDiaInput, 0.2, 1.0, printParams.nozzleDiameter);
+  if (!printParams.lineWidthTouched) {
+    printParams.lineWidth = +(printParams.nozzleDiameter * 1.1).toFixed(2);
+    lineWidthInput.value = printParams.lineWidth;
+  }
+});
+
+lineWidthInput.addEventListener("input", () => {
+  printParams.lineWidth = numberInput(lineWidthInput, 0.3, 1.2, printParams.lineWidth);
+  printParams.lineWidthTouched = true;
+});
+
+filamentDiaInput.addEventListener("input", () => {
+  printParams.filamentDiameter = numberInput(filamentDiaInput, 1, 3, printParams.filamentDiameter);
+});
+
+printSpeedSlider.addEventListener("input", () => {
+  printParams.printSpeed = +printSpeedSlider.value;
+  printSpeedValue.textContent = `${printParams.printSpeed} mm/s`;
+});
+
+firstLayerSpeedSlider.addEventListener("input", () => {
+  printParams.firstLayerSpeed = +firstLayerSpeedSlider.value;
+  firstLayerSpeedValue.textContent = `${printParams.firstLayerSpeed} mm/s`;
+});
+
+baseLayersInput.addEventListener("input", () => {
+  printParams.baseLayers = Math.round(numberInput(baseLayersInput, 0, 10, printParams.baseLayers));
+  syncToolpathView();
+});
+
+bedTempInput.addEventListener("input", () => {
+  printParams.bedTemp = Math.round(numberInput(bedTempInput, 0, 120, printParams.bedTemp));
+});
+
+nozzleTempInput.addEventListener("input", () => {
+  printParams.nozzleTemp = Math.round(numberInput(nozzleTempInput, 150, 300, printParams.nozzleTemp));
+});
+
+firmwareSelect.addEventListener("change", () => {
+  printParams.firmware = firmwareSelect.value; // only "marlin" is selectable for v1
+});
+
+function formatDuration(totalSeconds) {
+  const s = Math.round(totalSeconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+
+function updateGcodeStats(points, eValues, gcode) {
+  const p = printParams;
+  // Σ segment length / speed, plus a rough flat constant for prime line,
+  // start/end moves and acceleration losses (heat-up time excluded).
+  let seconds = 60;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const len = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    seconds += len / (b.z <= p.layerHeight + 1e-6 ? p.firstLayerSpeed : p.printSpeed);
+  }
+  const eTotal = eValues[eValues.length - 1];
+  const grams = (filamentArea(p) * eTotal / 1000) * PLA_DENSITY_G_CM3;
+  const rows = [
+    `G-code: ${gcode.split("\n").length.toLocaleString()} lines · est. time ${formatDuration(seconds)} (excl. heat-up)`,
+    `Filament: ${(eTotal / 1000).toFixed(2)} m · ${grams.toFixed(1)} g (PLA density ${PLA_DENSITY_G_CM3})`,
+  ];
+  let maxR = 0;
+  for (const pt of points) maxR = Math.max(maxR, pt.r);
+  if (maxR * 2 > BED.x - 20) rows.push(`⚠ diameter ${(maxR * 2).toFixed(0)} mm is tight on the assumed ${BED.x}x${BED.y} bed`);
+  gcodeStatsEl.textContent = rows.join("\n");
+}
+
+exportGcodeBtn.addEventListener("click", () => {
+  const points = generateSpiralToolpath(state, printParams);
+  if (points.length < 2) {
+    alert("Toolpath is empty — check height and layer height.");
+    return;
+  }
+  const eValues = computeExtrusion(points, printParams);
+  // Safety check mirroring the acceptance criteria: E must be finite and
+  // strictly increasing, or the file could jam a real hotend.
+  for (let i = 1; i < eValues.length; i++) {
+    if (!Number.isFinite(eValues[i]) || eValues[i] <= eValues[i - 1]) {
+      alert(`Internal error: E values not strictly increasing at point ${i}. Export aborted.`);
+      return;
+    }
+  }
+  const gcode = assembleGCode(points, eValues, printParams);
+
+  const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
+  const blob = new Blob([gcode], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `vase-${ts}.gcode`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+
+  updateGcodeStats(points, eValues, gcode);
 });
 
 // ---------------------------------------------------------------------------
