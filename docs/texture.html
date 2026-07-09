@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mesh Texturizer — Prototype</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --panel-border: #2c3038;
+    --text: #e8e9ec;
+    --text-dim: #9aa0ab;
+    --accent: #5eb4ff;
+    --accent-2: #ff9a5e;
+    --axis: #3a3f4a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--panel-border);
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: 0.2px; }
+  header p { margin: 0; font-size: 12.5px; color: var(--text-dim); }
+  header nav { margin-left: auto; font-size: 12px; }
+  header nav a { color: var(--text-dim); text-decoration: none; }
+  header nav a:hover { color: var(--text); }
+  header nav a.active { color: var(--accent); }
+  main { flex: 1; display: flex; min-height: 0; position: relative; }
+  #viewport-wrap { flex: 1; min-height: 0; position: relative; }
+  #viewport-wrap canvas { display: block; }
+  .pane-label {
+    position: absolute; top: 10px; left: 14px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-dim); z-index: 2; pointer-events: none;
+  }
+  #stats {
+    position: absolute; bottom: 10px; left: 14px;
+    font-size: 11px; color: var(--text-dim);
+    z-index: 2; line-height: 1.5; white-space: pre-line;
+    pointer-events: none;
+  }
+  #status {
+    position: absolute; top: 10px; right: 14px;
+    font-size: 11px; color: var(--accent-2);
+    z-index: 2; pointer-events: none;
+  }
+  #dropHint {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 14px;
+    z-index: 1; pointer-events: none;
+    text-align: center; line-height: 1.8;
+  }
+  #controls {
+    flex-shrink: 0;
+    border-top: 1px solid var(--panel-border);
+    background: var(--panel);
+    padding: 12px 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    align-items: center;
+  }
+  .control { display: flex; flex-direction: column; gap: 4px; min-width: 90px; }
+  .control label {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--text-dim);
+  }
+  .control .value { font-size: 11px; color: var(--text); }
+  input[type="range"] { width: 120px; }
+  input[type="number"] {
+    width: 64px; background: #11131700;
+    border: 1px solid var(--panel-border); color: var(--text);
+    border-radius: 4px; padding: 4px 6px; font-size: 12px;
+  }
+  select {
+    background: #262a33; border: 1px solid var(--panel-border);
+    color: var(--text); border-radius: 4px; padding: 4px 6px; font-size: 12px;
+  }
+  button {
+    background: #262a33; border: 1px solid var(--panel-border);
+    color: var(--text); padding: 7px 14px; border-radius: 6px;
+    font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #2f333e; border-color: #444a56; }
+  button.primary {
+    background: var(--accent); color: #0c1420;
+    border-color: var(--accent); font-weight: 600;
+  }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .mode-group { display: flex; gap: 4px; }
+  .mode-group button { padding: 6px 10px; }
+  .mode-group button.on {
+    background: var(--accent); color: #0c1420; border-color: var(--accent);
+    font-weight: 600;
+  }
+  .controls-break { flex-basis: 100%; height: 0; border-top: 1px dashed var(--panel-border); }
+  input[type="file"] { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Mesh Texturizer</h1>
+    <p>Prototype — import an STL, paint regions, bake procedural or image displacement, export for slicing.</p>
+    <nav>
+      <a href="index.html">Home</a> ·
+      <a href="vase.html">Vase Designer</a> ·
+      <a href="texture.html" class="active">Mesh Texturizer</a> ·
+      <a href="terrain.html">Terrain Maker</a>
+    </nav>
+  </header>
+  <main>
+    <div id="viewport-wrap">
+      <div class="pane-label">3D View (drop an STL anywhere)</div>
+      <div id="dropHint">Drop an .stl file here<br />or use Import STL below</div>
+      <div id="stats"></div>
+      <div id="status"></div>
+    </div>
+  </main>
+  <div id="controls">
+    <button id="importBtn">Import STL</button>
+    <input type="file" id="importInput" accept=".stl" />
+    <div class="control">
+      <label>Tool</label>
+      <div class="mode-group">
+        <button id="modeOrbit" class="on" title="Rotate/zoom only">Orbit</button>
+        <button id="modeSmart" title="Click a face to select the connected smooth region">Smart select</button>
+        <button id="modeBrush" title="Paint faces to select">Brush</button>
+        <button id="modeErase" title="Paint faces to deselect">Erase</button>
+      </div>
+    </div>
+    <div class="control">
+      <label>Smart angle (°)</label>
+      <input type="range" id="angleSlider" min="5" max="90" step="1" value="30" />
+      <span class="value" id="angleValue">30°</span>
+    </div>
+    <div class="control">
+      <label>Brush radius (mm)</label>
+      <input type="range" id="brushSlider" min="1" max="30" step="0.5" value="6" />
+      <span class="value" id="brushValue">6 mm</span>
+    </div>
+    <button id="selectAllBtn">Select all</button>
+    <button id="clearSelBtn">Clear selection</button>
+    <div class="controls-break"></div>
+    <div class="control">
+      <label>Texture</label>
+      <select id="textureType">
+        <option value="voronoi" selected>Voronoi</option>
+        <option value="perlin">Perlin</option>
+        <option value="billow">Billow</option>
+        <option value="ridged">Ridged</option>
+        <option value="image">Image…</option>
+      </select>
+    </div>
+    <button id="imageBtn" disabled>Choose image</button>
+    <input type="file" id="imageInput" accept="image/*" />
+    <div class="control">
+      <label>Mapping</label>
+      <select id="mappingType" disabled>
+        <option value="planar" selected>Planar</option>
+        <option value="cylindrical">Cylindrical</option>
+        <option value="spherical">Spherical</option>
+      </select>
+    </div>
+    <div class="control">
+      <label>Axis</label>
+      <select id="mappingAxis" disabled>
+        <option value="z" selected>Z</option>
+        <option value="x">X</option>
+        <option value="y">Y</option>
+      </select>
+    </div>
+    <div class="control">
+      <label>Feature size (mm)</label>
+      <input type="number" id="scaleInput" min="0.5" max="100" step="0.5" value="4" />
+    </div>
+    <div class="control">
+      <label>Depth (mm)</label>
+      <input type="number" id="depthInput" min="0.05" max="10" step="0.05" value="0.8" />
+    </div>
+    <div class="control">
+      <label>Direction</label>
+      <select id="directionSelect">
+        <option value="0" selected>Emboss (out)</option>
+        <option value="1">Engrave (in)</option>
+        <option value="0.5">Both (centered)</option>
+      </select>
+    </div>
+    <div class="control">
+      <label>Resolution (mm)</label>
+      <input type="number" id="resolutionInput" min="0.2" max="5" step="0.1" value="0.6" />
+    </div>
+    <button id="rerollBtn" title="New random noise seed">Reroll seed</button>
+    <button id="bakeBtn" class="primary" disabled>Bake texture</button>
+    <button id="undoBtn" disabled>Undo bake</button>
+    <button id="exportStlBtn" disabled>Export STL</button>
+    <button id="export3mfBtn" disabled>Export 3MF</button>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+    "three-mesh-bvh": "https://unpkg.com/three-mesh-bvh@0.7.6/build/index.module.js",
+    "fflate": "https://unpkg.com/fflate@0.8.2/esm/browser.js"
+  }
+}
+</script>
+<script type="module" src="js/texture/app.js"></script>
+</body>
+</html>

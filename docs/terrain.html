@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Terrain Maker — Prototype</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --panel-border: #2c3038;
+    --text: #e8e9ec;
+    --text-dim: #9aa0ab;
+    --accent: #5eb4ff;
+    --accent-2: #ff9a5e;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+  }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--panel-border);
+    display: flex; align-items: baseline; gap: 14px; flex-shrink: 0;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: 0.2px; }
+  header p { margin: 0; font-size: 12.5px; color: var(--text-dim); }
+  header nav { margin-left: auto; font-size: 12px; }
+  header nav a { color: var(--text-dim); text-decoration: none; }
+  header nav a:hover { color: var(--text); }
+  header nav a.active { color: var(--accent); }
+  main { flex: 1; display: flex; min-height: 0; position: relative; }
+  #viewport-wrap { flex: 1; min-height: 0; position: relative; }
+  #viewport-wrap canvas { display: block; }
+  .pane-label {
+    position: absolute; top: 10px; left: 14px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--text-dim); z-index: 2; pointer-events: none;
+  }
+  #stats {
+    position: absolute; bottom: 10px; left: 14px;
+    font-size: 11px; color: var(--text-dim);
+    z-index: 2; line-height: 1.5; white-space: pre-line; pointer-events: none;
+  }
+  #dropHint {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 14px;
+    z-index: 1; pointer-events: none; text-align: center; line-height: 1.8;
+  }
+  #controls {
+    flex-shrink: 0;
+    border-top: 1px solid var(--panel-border);
+    background: var(--panel);
+    padding: 12px 16px;
+    display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
+  }
+  .control { display: flex; flex-direction: column; gap: 4px; min-width: 90px; }
+  .control label {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--text-dim);
+  }
+  .control .value { font-size: 11px; color: var(--text); }
+  input[type="range"] { width: 120px; }
+  input[type="number"] {
+    width: 64px; background: #11131700;
+    border: 1px solid var(--panel-border); color: var(--text);
+    border-radius: 4px; padding: 4px 6px; font-size: 12px;
+  }
+  select {
+    background: #262a33; border: 1px solid var(--panel-border);
+    color: var(--text); border-radius: 4px; padding: 4px 6px; font-size: 12px;
+  }
+  button {
+    background: #262a33; border: 1px solid var(--panel-border);
+    color: var(--text); padding: 7px 14px; border-radius: 6px;
+    font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #2f333e; border-color: #444a56; }
+  button.primary {
+    background: var(--accent); color: #0c1420;
+    border-color: var(--accent); font-weight: 600;
+  }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .checkbox-control { flex-direction: row; align-items: center; gap: 6px; min-width: 0; }
+  .checkbox-control label { font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--text); cursor: pointer; }
+  .controls-break { flex-basis: 100%; height: 0; border-top: 1px dashed var(--panel-border); }
+  input[type="file"] { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Terrain Maker</h1>
+    <p>Prototype — greyscale heightmap in, printing-aware topo model out (water level, terracing, rock texture, solid base).</p>
+    <nav>
+      <a href="index.html">Home</a> ·
+      <a href="vase.html">Vase Designer</a> ·
+      <a href="texture.html">Mesh Texturizer</a> ·
+      <a href="terrain.html" class="active">Terrain Maker</a>
+    </nav>
+  </header>
+  <main>
+    <div id="viewport-wrap">
+      <div class="pane-label">3D View (drop a heightmap image anywhere)</div>
+      <div id="dropHint">Drop a greyscale heightmap image here<br />or Import below — or try the demo terrain</div>
+      <div id="stats"></div>
+    </div>
+  </main>
+  <div id="controls">
+    <button id="importBtn">Import heightmap</button>
+    <input type="file" id="importInput" accept="image/*" />
+    <button id="demoBtn">Demo terrain</button>
+    <div class="control">
+      <label>Model width (mm)</label>
+      <input type="number" id="widthInput" min="20" max="400" step="5" value="180" />
+    </div>
+    <div class="control">
+      <label>Peak height (mm)</label>
+      <input type="number" id="peakInput" min="1" max="150" step="1" value="35" />
+    </div>
+    <div class="control">
+      <label>Base (mm)</label>
+      <input type="number" id="baseInput" min="0.4" max="20" step="0.2" value="3" />
+    </div>
+    <div class="control">
+      <label>Grid resolution</label>
+      <input type="range" id="resolutionSlider" min="64" max="512" step="32" value="256" />
+      <span class="value" id="resolutionValue">256</span>
+    </div>
+    <div class="control">
+      <label>Smoothing</label>
+      <input type="range" id="smoothSlider" min="0" max="5" step="1" value="1" />
+      <span class="value" id="smoothValue">1 pass</span>
+    </div>
+    <div class="control">
+      <label>Water level (%)</label>
+      <input type="range" id="waterSlider" min="0" max="60" step="1" value="0" />
+      <span class="value" id="waterValue">off</span>
+    </div>
+    <div class="controls-break"></div>
+    <div class="control checkbox-control">
+      <input type="checkbox" id="terraceCheck" />
+      <label for="terraceCheck">Terrace to layer height</label>
+    </div>
+    <div class="control">
+      <label>Layer height (mm)</label>
+      <input type="number" id="layerHeightInput" min="0.08" max="0.4" step="0.01" value="0.2" />
+    </div>
+    <div class="control">
+      <label>Surface texture</label>
+      <select id="textureSelect">
+        <option value="none" selected>None</option>
+        <option value="rock">Rock (slopes)</option>
+        <option value="ripple">Water ripple</option>
+      </select>
+    </div>
+    <div class="control">
+      <label>Feature size (mm)</label>
+      <input type="number" id="featureInput" min="1" max="30" step="0.5" value="4" />
+    </div>
+    <div class="control">
+      <label>Texture depth (mm)</label>
+      <input type="number" id="depthInput" min="0.1" max="3" step="0.1" value="0.6" />
+    </div>
+    <div class="control">
+      <label>Bed size (mm)</label>
+      <input type="number" id="bedSizeInput" min="100" max="400" step="1" value="256" />
+    </div>
+    <button id="exportStlBtn" class="primary" disabled>Export STL</button>
+    <button id="export3mfBtn" disabled>Export 3MF</button>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+    "fflate": "https://unpkg.com/fflate@0.8.2/esm/browser.js"
+  }
+}
+</script>
+<script type="module" src="js/terrain/app.js"></script>
+</body>
+</html>
