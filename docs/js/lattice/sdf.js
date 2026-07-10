@@ -77,16 +77,14 @@ export function makeLatticeSDF(type, cellMm, wallMm) {
     ) * scale - half;
 }
 
-// Compose the final part field:
+// Compose the final part field from ANY shape field (primitive or a
+// voxelized imported part):
 //  - lattice type "none": the solid shape (hollowed if shellMm > 0)
 //  - otherwise: lattice walls clipped to the shape, unioned with an outer
 //    shell of shellMm (0 = open-cell lattice showing at the surface) and
-//    optional solid top/bottom caps of capMm.
-export function makePartSDF({ shape, latticeType, cellMm, wallMm, shellMm, capMm }) {
-  const shapeF = makeShapeSDF(shape);
-  const bounds = shapeBounds(shape);
-  const zTop = bounds.max[2];
-
+//    optional solid top/bottom caps of capMm (bands measured from the
+//    shape's z extents).
+export function composePartSDF(shapeF, zBottom, zTop, { latticeType, cellMm, wallMm, shellMm, capMm }) {
   if (!latticeType || latticeType === "none") {
     if (shellMm > 0) {
       // hollow: keep a band of shellMm inside the surface
@@ -105,9 +103,14 @@ export function makePartSDF({ shape, latticeType, cellMm, wallMm, shellMm, capMm
     if (shellMm > 0) d = Math.min(d, Math.max(s, -(s + shellMm))); // outer shell
     if (capMm > 0) {
       // caps: solid shape within capMm of the bottom or top
-      const capRegion = Math.min(z - capMm, (zTop - capMm) - z); // negative inside either cap band
+      const capRegion = Math.min(z - (zBottom + capMm), (zTop - capMm) - z); // negative inside either cap band
       d = Math.min(d, Math.max(s, capRegion));
     }
     return d;
   };
+}
+
+export function makePartSDF(params) {
+  const bounds = shapeBounds(params.shape);
+  return composePartSDF(makeShapeSDF(params.shape), bounds.min[2], bounds.max[2], params);
 }

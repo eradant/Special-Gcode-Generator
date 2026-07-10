@@ -4,13 +4,17 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { shapeSolidVolume } from "./sdf.js";
-import { writeBinarySTL } from "../texture/stl.js";
+import { MAX_VOXEL_CELLS, meshBounds } from "./voxelize.js";
+import { parseSTL, writeBinarySTL } from "../texture/stl.js";
+import { weld } from "../texture/mesh-core.js";
 import { build3MF } from "../shared/export-3mf.js";
+import { parse3MF } from "../shared/import-3mf.js";
 
 const PLA_DENSITY_G_CM3 = 1.24;
 
 const state = {
-  mesh: null, // { positions, faces }
+  mesh: null, // { positions, faces } — generated result
+  imported: null, // { positions, faces, name } — loaded part (z-floored, XY-centered)
   stats: null,
   generating: false,
   lastParams: null,
@@ -110,12 +114,93 @@ const export3mfBtn = document.getElementById("export3mfBtn");
 const statusEl = document.getElementById("status");
 const statsEl = document.getElementById("stats");
 
-shapeSelect.addEventListener("change", () => {
+function syncShapeControls() {
   const t = shapeSelect.value;
   widthControl.style.display = t === "box" ? "" : "none";
   depthControl.style.display = t === "box" ? "" : "none";
-  diameterControl.style.display = t === "box" ? "none" : "";
-  heightControl.style.display = t === "sphere" ? "none" : "";
+  diameterControl.style.display = t === "box" || t === "imported" ? "none" : "";
+  heightControl.style.display = t === "sphere" || t === "imported" ? "none" : "";
+}
+shapeSelect.addEventListener("change", () => {
+  syncShapeControls();
+  // Switching back to a primitive or to the import shows the relevant preview.
+  if (shapeSelect.value === "imported" && state.imported && !state.generating) {
+    previewImported();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// STL/3MF import: parse -> weld -> recenter (XY origin, floor z=0) -> preview
+// ---------------------------------------------------------------------------
+const importBtn = document.getElementById("importBtn");
+const importInput = document.getElementById("importInput");
+
+async function loadPartFile(file) {
+  let soup;
+  try {
+    const buffer = await file.arrayBuffer();
+    soup = /\.3mf$/i.test(file.name) ? parse3MF(buffer) : parseSTL(buffer);
+  } catch (err) {
+    alert(`Could not read ${file.name}: ${err.message}`);
+    return;
+  }
+  let mesh;
+  try {
+    mesh = weld(soup);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  const { positions } = mesh;
+  const b = meshBounds(positions);
+  const cx = (b.min[0] + b.max[0]) / 2, cy = (b.min[1] + b.max[1]) / 2;
+  for (let i = 0; i < positions.length; i += 3) {
+    positions[i] -= cx;
+    positions[i + 1] -= cy;
+    positions[i + 2] -= b.min[2];
+  }
+  state.imported = { ...mesh, name: file.name };
+
+  const importedOption = shapeSelect.querySelector('option[value="imported"]');
+  importedOption.disabled = false;
+  importedOption.textContent = `Imported: ${file.name.length > 22 ? file.name.slice(0, 19) + "…" : file.name}`;
+  shapeSelect.value = "imported";
+  syncShapeControls();
+  previewImported();
+
+  // Voxel-size guidance so Generate doesn't immediately hit the grid cap.
+  const size = [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
+  const minVoxel = Math.cbrt((size[0] * size[1] * size[2]) / MAX_VOXEL_CELLS);
+  const voxelInput = document.getElementById("voxelInput");
+  if (+voxelInput.value < minVoxel) {
+    voxelInput.value = (Math.ceil(minVoxel * 10) / 10).toFixed(1);
+    statusEl.textContent = `Part is ${size[0].toFixed(0)}×${size[1].toFixed(0)}×${size[2].toFixed(0)} mm — voxel raised to ${voxelInput.value} mm to fit the grid limit`;
+  } else {
+    statusEl.textContent = `Loaded ${file.name} (${(mesh.faces.length / 3).toLocaleString()} tris) — set lattice params and Generate`;
+  }
+}
+
+function previewImported() {
+  state.mesh = { positions: state.imported.positions, faces: state.imported.faces };
+  state.stats = null;
+  buildRenderMesh();
+  statsEl.textContent = `${state.imported.name}\n${(state.imported.faces.length / 3).toLocaleString()} tris (imported part — not yet latticed)`;
+  const b = meshBounds(state.imported.positions);
+  fitCamera({ width: b.max[0] - b.min[0], depth: b.max[1] - b.min[1], height: b.max[2] });
+  exportStlBtn.disabled = true;
+  export3mfBtn.disabled = true;
+}
+
+importBtn.addEventListener("click", () => importInput.click());
+importInput.addEventListener("change", () => {
+  if (importInput.files[0]) loadPartFile(importInput.files[0]);
+  importInput.value = "";
+});
+wrap.addEventListener("dragover", (evt) => evt.preventDefault());
+wrap.addEventListener("drop", (evt) => {
+  evt.preventDefault();
+  const file = [...evt.dataTransfer.files].find((f) => /\.(stl|3mf)$/i.test(f.name));
+  if (file) loadPartFile(file);
 });
 
 function num(id, min, max, fallback) {
@@ -131,7 +216,9 @@ function collectParams() {
       ? { type, width: num("widthInput", 10, 250, 60), depth: num("depthInput", 10, 250, 60), height: num("heightInput", 5, 250, 30) }
       : type === "cylinder"
         ? { type, diameter: num("diameterInput", 10, 250, 50), height: num("heightInput", 5, 250, 30) }
-        : { type, diameter: num("diameterInput", 10, 250, 50) };
+        : type === "sphere"
+          ? { type, diameter: num("diameterInput", 10, 250, 50) }
+          : { type: "imported" };
   return {
     shape,
     latticeType: latticeSelect.value,
@@ -169,6 +256,11 @@ worker.onmessage = (evt) => {
 generateBtn.addEventListener("click", () => {
   if (state.generating) return;
   const params = collectParams();
+  const isImported = params.shape.type === "imported";
+  if (isImported && !state.imported) {
+    statusEl.textContent = "Import an STL/3MF first";
+    return;
+  }
   if (params.voxelMm > params.wallMm / 2 && params.latticeType !== "none") {
     statusEl.textContent = `Note: voxel ${params.voxelMm} mm is coarse for ${params.wallMm} mm walls — generating anyway`;
   } else {
@@ -177,8 +269,20 @@ generateBtn.addEventListener("click", () => {
   state.generating = true;
   state.lastParams = params;
   generateBtn.disabled = true;
-  worker.postMessage({ params });
-  fitCamera(params.shape);
+  if (isImported) {
+    // Send copies: the originals stay usable for re-generation and preview.
+    const positions = state.imported.positions.slice();
+    const faces = state.imported.faces.slice();
+    worker.postMessage(
+      { params, imported: { positions, faces } },
+      [positions.buffer, faces.buffer],
+    );
+    const b = meshBounds(state.imported.positions);
+    fitCamera({ width: b.max[0] - b.min[0], depth: b.max[1] - b.min[1], height: b.max[2] });
+  } else {
+    worker.postMessage({ params });
+    fitCamera(params.shape);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -188,7 +292,7 @@ function updateStats() {
   const s = state.stats;
   const p = state.lastParams;
   if (!s || !p) { statsEl.textContent = ""; return; }
-  const solidVol = shapeSolidVolume(p.shape);
+  const solidVol = s.solidVolumeMm3 ?? shapeSolidVolume(p.shape);
   const pct = (s.volumeMm3 / solidVol) * 100;
   const grams = (s.volumeMm3 / 1000) * PLA_DENSITY_G_CM3;
   const solidGrams = (solidVol / 1000) * PLA_DENSITY_G_CM3;
@@ -214,7 +318,10 @@ function download(buffer, name, type) {
 
 function exportName(ext) {
   const p = state.lastParams;
-  return `${p.latticeType === "none" ? "shape" : p.latticeType}-${p.shape.type}.${ext}`;
+  const base = p.shape.type === "imported" && state.imported
+    ? state.imported.name.replace(/\.(stl|3mf)$/i, "")
+    : p.shape.type;
+  return `${base}-${p.latticeType === "none" ? "shelled" : p.latticeType}.${ext}`;
 }
 
 exportStlBtn.addEventListener("click", () => {

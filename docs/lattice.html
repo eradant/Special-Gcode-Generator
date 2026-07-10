@@ -90,7 +90,7 @@
 <div id="app">
   <header>
     <h1>Generative Lattice</h1>
-    <p>Prototype — SDF-defined gyroid / Schwarz / diamond lattices in parametric shapes. Watertight solids ready to slice.</p>
+    <p>Prototype — gyroid / Schwarz / diamond lattices in parametric shapes or imported STL/3MF parts. Watertight solids ready to slice.</p>
     <nav>
       <a href="index.html">Home</a> ·
       <a href="vase.html">Vase Designer</a> ·
@@ -101,18 +101,21 @@
   </header>
   <main>
     <div id="viewport-wrap">
-      <div class="pane-label">3D View</div>
+      <div class="pane-label">3D View (drop an STL/3MF to lattice-fill it)</div>
       <div id="stats"></div>
       <div id="status"></div>
     </div>
   </main>
   <div id="controls">
+    <button id="importBtn">Import STL/3MF</button>
+    <input type="file" id="importInput" accept=".stl,.3mf" style="display:none" />
     <div class="control">
       <label>Shape</label>
       <select id="shapeSelect">
         <option value="box" selected>Box</option>
         <option value="cylinder">Cylinder</option>
         <option value="sphere">Sphere</option>
+        <option value="imported" disabled>Imported part</option>
       </select>
     </div>
     <div class="control" id="widthControl">
