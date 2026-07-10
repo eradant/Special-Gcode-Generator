@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Terrain Maker — Prototype</title>
+<title>Generative Lattice — Prototype</title>
 <style>
   :root {
     --bg: #14161a;
@@ -46,11 +46,10 @@
     font-size: 11px; color: var(--text-dim);
     z-index: 2; line-height: 1.5; white-space: pre-line; pointer-events: none;
   }
-  #dropHint {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    color: var(--text-dim); font-size: 14px;
-    z-index: 1; pointer-events: none; text-align: center; line-height: 1.8;
+  #status {
+    position: absolute; top: 10px; right: 14px;
+    font-size: 11px; color: var(--accent-2);
+    z-index: 2; pointer-events: none;
   }
   #controls {
     flex-shrink: 0;
@@ -64,8 +63,6 @@
     font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px;
     color: var(--text-dim);
   }
-  .control .value { font-size: 11px; color: var(--text); }
-  input[type="range"] { width: 120px; }
   input[type="number"] {
     width: 64px; background: #11131700;
     border: 1px solid var(--panel-border); color: var(--text);
@@ -87,93 +84,84 @@
   }
   button.primary:hover { filter: brightness(1.08); }
   button:disabled { opacity: 0.45; cursor: default; }
-  .checkbox-control { flex-direction: row; align-items: center; gap: 6px; min-width: 0; }
-  .checkbox-control label { font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--text); cursor: pointer; }
-  .controls-break { flex-basis: 100%; height: 0; border-top: 1px dashed var(--panel-border); }
-  input[type="file"] { display: none; }
 </style>
 </head>
 <body>
 <div id="app">
   <header>
-    <h1>Terrain Maker</h1>
-    <p>Prototype — greyscale heightmap in, printing-aware topo model out (water level, terracing, rock texture, solid base).</p>
+    <h1>Generative Lattice</h1>
+    <p>Prototype — SDF-defined gyroid / Schwarz / diamond lattices in parametric shapes. Watertight solids ready to slice.</p>
     <nav>
       <a href="index.html">Home</a> ·
       <a href="vase.html">Vase Designer</a> ·
       <a href="texture.html">Mesh Texturizer</a> ·
-      <a href="terrain.html" class="active">Terrain Maker</a> ·
-      <a href="lattice.html">Lattice</a>
+      <a href="terrain.html">Terrain Maker</a> ·
+      <a href="lattice.html" class="active">Lattice</a>
     </nav>
   </header>
   <main>
     <div id="viewport-wrap">
-      <div class="pane-label">3D View (drop a heightmap image anywhere)</div>
-      <div id="dropHint">Drop a greyscale heightmap image here<br />or Import below — or try the demo terrain</div>
+      <div class="pane-label">3D View</div>
       <div id="stats"></div>
+      <div id="status"></div>
     </div>
   </main>
   <div id="controls">
-    <button id="importBtn">Import heightmap</button>
-    <input type="file" id="importInput" accept="image/*" />
-    <button id="demoBtn">Demo terrain</button>
     <div class="control">
-      <label>Model width (mm)</label>
-      <input type="number" id="widthInput" min="20" max="400" step="5" value="180" />
+      <label>Shape</label>
+      <select id="shapeSelect">
+        <option value="box" selected>Box</option>
+        <option value="cylinder">Cylinder</option>
+        <option value="sphere">Sphere</option>
+      </select>
+    </div>
+    <div class="control" id="widthControl">
+      <label>Width (mm)</label>
+      <input type="number" id="widthInput" min="10" max="250" step="1" value="60" />
+    </div>
+    <div class="control" id="depthControl">
+      <label>Depth (mm)</label>
+      <input type="number" id="depthInput" min="10" max="250" step="1" value="60" />
+    </div>
+    <div class="control" id="diameterControl" style="display:none">
+      <label>Diameter (mm)</label>
+      <input type="number" id="diameterInput" min="10" max="250" step="1" value="50" />
+    </div>
+    <div class="control" id="heightControl">
+      <label>Height (mm)</label>
+      <input type="number" id="heightInput" min="5" max="250" step="1" value="30" />
     </div>
     <div class="control">
-      <label>Peak height (mm)</label>
-      <input type="number" id="peakInput" min="1" max="150" step="1" value="35" />
-    </div>
-    <div class="control">
-      <label>Base (mm)</label>
-      <input type="number" id="baseInput" min="0.4" max="20" step="0.2" value="3" />
-    </div>
-    <div class="control">
-      <label>Grid resolution</label>
-      <input type="range" id="resolutionSlider" min="64" max="512" step="32" value="256" />
-      <span class="value" id="resolutionValue">256</span>
-    </div>
-    <div class="control">
-      <label>Smoothing</label>
-      <input type="range" id="smoothSlider" min="0" max="5" step="1" value="1" />
-      <span class="value" id="smoothValue">1 pass</span>
-    </div>
-    <div class="control">
-      <label>Water level (%)</label>
-      <input type="range" id="waterSlider" min="0" max="60" step="1" value="0" />
-      <span class="value" id="waterValue">off</span>
-    </div>
-    <div class="controls-break"></div>
-    <div class="control checkbox-control">
-      <input type="checkbox" id="terraceCheck" />
-      <label for="terraceCheck">Terrace to layer height</label>
-    </div>
-    <div class="control">
-      <label>Layer height (mm)</label>
-      <input type="number" id="layerHeightInput" min="0.08" max="0.4" step="0.01" value="0.2" />
-    </div>
-    <div class="control">
-      <label>Surface texture</label>
-      <select id="textureSelect">
-        <option value="none" selected>None</option>
-        <option value="rock">Rock (slopes)</option>
-        <option value="ripple">Water ripple</option>
+      <label>Lattice</label>
+      <select id="latticeSelect">
+        <option value="gyroid" selected>Gyroid</option>
+        <option value="schwarz">Schwarz P</option>
+        <option value="diamond">Diamond</option>
+        <option value="none">None (solid/hollow)</option>
       </select>
     </div>
     <div class="control">
-      <label>Feature size (mm)</label>
-      <input type="number" id="featureInput" min="1" max="30" step="0.5" value="4" />
+      <label>Cell size (mm)</label>
+      <input type="number" id="cellInput" min="3" max="40" step="0.5" value="10" />
     </div>
     <div class="control">
-      <label>Texture depth (mm)</label>
-      <input type="number" id="depthInput" min="0.1" max="3" step="0.1" value="0.6" />
+      <label>Wall (mm)</label>
+      <input type="number" id="wallInput" min="0.4" max="6" step="0.1" value="1.2" />
     </div>
     <div class="control">
-      <label>Bed size (mm)</label>
-      <input type="number" id="bedSizeInput" min="100" max="400" step="1" value="256" />
+      <label>Shell (mm, 0=open)</label>
+      <input type="number" id="shellInput" min="0" max="6" step="0.1" value="1.2" />
     </div>
-    <button id="exportStlBtn" class="primary" disabled>Export STL</button>
+    <div class="control">
+      <label>Caps (mm, 0=off)</label>
+      <input type="number" id="capInput" min="0" max="6" step="0.1" value="1" />
+    </div>
+    <div class="control">
+      <label>Voxel (mm)</label>
+      <input type="number" id="voxelInput" min="0.3" max="2" step="0.1" value="0.7" />
+    </div>
+    <button id="generateBtn" class="primary">Generate</button>
+    <button id="exportStlBtn" disabled>Export STL</button>
     <button id="export3mfBtn" disabled>Export 3MF</button>
   </div>
 </div>
@@ -187,6 +175,6 @@
   }
 }
 </script>
-<script type="module" src="js/terrain/app.js"></script>
+<script type="module" src="js/lattice/app.js"></script>
 </body>
 </html>
