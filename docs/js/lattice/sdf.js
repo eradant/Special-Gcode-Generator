@@ -51,21 +51,26 @@ export function shapeSolidVolume(shape) {
   return shape.width * shape.depth * shape.height;
 }
 
-// TPMS implicit surfaces, thickened to solid walls of ~wallMm.
-// Returns negative inside the wall material.
-export function makeLatticeSDF(type, cellMm, wallMm) {
+// TPMS implicit surfaces, thickened to solid walls. `wall` is either a
+// constant thickness in mm or a function wall(x, y, z) -> mm — the latter is
+// what enables nTop-style field-driven density grading (the TPMS period stays
+// fixed; only the wall thickness varies, which keeps the lattice geometry
+// valid everywhere). Returns negative inside the wall material.
+export function makeLatticeSDF(type, cellMm, wall) {
   const k = (2 * Math.PI) / cellMm;
   const scale = 1 / k; // implicit value -> approx mm
-  const half = wallMm / 2;
+  const wallFn = typeof wall === "function" ? wall : null;
+  const halfConst = wallFn ? 0 : wall / 2;
+  const half = wallFn ? (x, y, z) => wallFn(x, y, z) / 2 : () => halfConst;
   if (type === "schwarz") {
     return (x, y, z) =>
-      Math.abs(Math.cos(k * x) + Math.cos(k * y) + Math.cos(k * z)) * scale - half;
+      Math.abs(Math.cos(k * x) + Math.cos(k * y) + Math.cos(k * z)) * scale - half(x, y, z);
   }
   if (type === "diamond") {
     return (x, y, z) => {
       const sx = Math.sin(k * x), sy = Math.sin(k * y), sz = Math.sin(k * z);
       const cx = Math.cos(k * x), cy = Math.cos(k * y), cz = Math.cos(k * z);
-      return Math.abs(sx * sy * sz + sx * cy * cz + cx * sy * cz + cx * cy * sz) * scale - half;
+      return Math.abs(sx * sy * sz + sx * cy * cz + cx * sy * cz + cx * cy * sz) * scale - half(x, y, z);
     };
   }
   // gyroid (default)
@@ -74,7 +79,44 @@ export function makeLatticeSDF(type, cellMm, wallMm) {
       Math.sin(k * x) * Math.cos(k * y) +
       Math.sin(k * y) * Math.cos(k * z) +
       Math.sin(k * z) * Math.cos(k * x),
-    ) * scale - half;
+    ) * scale - half(x, y, z);
+}
+
+// Field-driven wall thickness (the nTop-style grading field). Combines up to
+// three sources into a 0..1 emphasis value t, then maps it onto
+// [wallMm, wallMaxMm]:
+//  - surfaceBias (0..1): denser near the part surface, fading over
+//    surfaceDepthMm (uses the shape SDF, which both primitives and voxelized
+//    imports provide)
+//  - zGradient (-1..1): positive = denser toward the bottom, negative = top
+//  - emphasis points: local attractors with linear falloff over their radius
+export function makeWallField(grading, shapeF, zBottom, zTop) {
+  const {
+    wallMm,
+    wallMaxMm,
+    surfaceBias = 0,
+    surfaceDepthMm = 6,
+    zGradient = 0,
+    emphasis = [],
+  } = grading;
+  const range = Math.max(0, wallMaxMm - wallMm);
+  const zSpan = Math.max(1e-9, zTop - zBottom);
+  return (x, y, z) => {
+    let t = 0;
+    if (surfaceBias > 0) {
+      const s = shapeF(x, y, z); // <= 0 inside; 0 at the surface
+      t += surfaceBias * Math.max(0, Math.min(1, 1 + s / surfaceDepthMm));
+    }
+    if (zGradient !== 0) {
+      const zn = Math.max(0, Math.min(1, (z - zBottom) / zSpan));
+      t += zGradient > 0 ? zGradient * (1 - zn) : -zGradient * zn;
+    }
+    for (const pt of emphasis) {
+      const d = Math.hypot(x - pt.x, y - pt.y, z - pt.z);
+      t += Math.max(0, 1 - d / pt.radius);
+    }
+    return wallMm + range * Math.min(1, t);
+  };
 }
 
 // Compose the final part field from ANY shape field (primitive or a
@@ -84,7 +126,7 @@ export function makeLatticeSDF(type, cellMm, wallMm) {
 //    shell of shellMm (0 = open-cell lattice showing at the surface) and
 //    optional solid top/bottom caps of capMm (bands measured from the
 //    shape's z extents).
-export function composePartSDF(shapeF, zBottom, zTop, { latticeType, cellMm, wallMm, shellMm, capMm }) {
+export function composePartSDF(shapeF, zBottom, zTop, { latticeType, cellMm, wallMm, wallFn, shellMm, capMm }) {
   if (!latticeType || latticeType === "none") {
     if (shellMm > 0) {
       // hollow: keep a band of shellMm inside the surface
@@ -96,7 +138,7 @@ export function composePartSDF(shapeF, zBottom, zTop, { latticeType, cellMm, wal
     return shapeF;
   }
 
-  const latticeF = makeLatticeSDF(latticeType, cellMm, wallMm);
+  const latticeF = makeLatticeSDF(latticeType, cellMm, wallFn || wallMm);
   return (x, y, z) => {
     const s = shapeF(x, y, z);
     let d = Math.max(s, latticeF(x, y, z)); // lattice clipped to shape
