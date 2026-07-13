@@ -5,6 +5,7 @@
 import { makeShapeSDF, composePartSDF, shapeBounds, makeWallField } from "./sdf.js";
 import { buildImportedSDF } from "./voxelize.js";
 import { meshField } from "./mtetra.js";
+import { polishMesh } from "./polish.js";
 import { weld, countBoundaryEdges } from "../texture/mesh-core.js";
 import { signedVolume } from "../terrain/terrain-core.js";
 
@@ -42,6 +43,15 @@ self.onmessage = (evt) => {
 
     post("status", "Welding…");
     const mesh = weld(soup);
+
+    // Surface polish: snap vertices onto the true field surface (always) and
+    // smooth out the marching-tetrahedra faceting (smoothPasses, 0 = off).
+    // Topology is unchanged.
+    post("status", "Polishing surface…");
+    mesh.positions = polishMesh(mesh.positions, mesh.faces, field, params.voxelMm, {
+      projectPasses: 2,
+      smoothPasses: Math.max(0, Math.min(5, params.smoothPasses ?? 2)),
+    });
 
     // Per-vertex wall thickness for the field-visualization coloring.
     let wallViz = null;

@@ -113,27 +113,113 @@ export function voxelizeMesh(positions, faces, bounds, voxelMm) {
   return { inside, nx, ny, nz, ox, oy, oz, voxelMm };
 }
 
-// Signed approximate distance (mm) per voxel: negative inside. Two-pass
-// chamfer transform over the 26-neighborhood, seeded with half a voxel at
-// the inside/outside boundary.
-export function distanceTransform(vox) {
-  const { inside, nx, ny, nz, voxelMm } = vox;
+// Closest distance from point p to triangle (a, b, c) — Ericson's method.
+function pointTriangleDistance(px, py, pz, positions, a, b, c) {
+  const ax = positions[a], ay = positions[a + 1], az = positions[a + 2];
+  const bx = positions[b], by = positions[b + 1], bz = positions[b + 2];
+  const cx = positions[c], cy = positions[c + 1], cz = positions[c + 2];
+  const abx = bx - ax, aby = by - ay, abz = bz - az;
+  const acx = cx - ax, acy = cy - ay, acz = cz - az;
+  const apx = px - ax, apy = py - ay, apz = pz - az;
+
+  const d1 = abx * apx + aby * apy + abz * apz;
+  const d2 = acx * apx + acy * apy + acz * apz;
+  if (d1 <= 0 && d2 <= 0) return Math.hypot(apx, apy, apz);
+
+  const bpx = px - bx, bpy = py - by, bpz = pz - bz;
+  const d3 = abx * bpx + aby * bpy + abz * bpz;
+  const d4 = acx * bpx + acy * bpy + acz * bpz;
+  if (d3 >= 0 && d4 <= d3) return Math.hypot(bpx, bpy, bpz);
+
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+    const t = d1 / (d1 - d3);
+    return Math.hypot(apx - t * abx, apy - t * aby, apz - t * abz);
+  }
+
+  const cpx = px - cx, cpy = py - cy, cpz = pz - cz;
+  const d5 = abx * cpx + aby * cpy + abz * cpz;
+  const d6 = acx * cpx + acy * cpy + acz * cpz;
+  if (d6 >= 0 && d5 <= d6) return Math.hypot(cpx, cpy, cpz);
+
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+    const t = d2 / (d2 - d6);
+    return Math.hypot(apx - t * acx, apy - t * acy, apz - t * acz);
+  }
+
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const t = (d4 - d3) / (d4 - d3 + (d5 - d6));
+    return Math.hypot(px - (bx + t * (cx - bx)), py - (by + t * (cy - by)), pz - (bz + t * (cz - bz)));
+  }
+
+  const denom = 1 / (va + vb + vc);
+  const v = vb * denom, w = vc * denom;
+  return Math.hypot(
+    px - (ax + abx * v + acx * w),
+    py - (ay + aby * v + acy * w),
+    pz - (az + abz * v + acz * w),
+  );
+}
+
+// Signed approximate distance (mm) per voxel: negative inside. Near the
+// surface (within `bandVoxels` voxels) distances are EXACT point-triangle
+// distances, so the reconstructed skin lands on the true mesh surface instead
+// of a half-voxel-quantized approximation — this is what keeps imported parts
+// dimensionally accurate. Away from the band, a two-pass 26-neighbor chamfer
+// transform propagates the band values (nothing deep inside needs accuracy).
+export function distanceTransform(vox, positions = null, faces = null, bandVoxels = 2) {
+  const { inside, nx, ny, nz, ox, oy, oz, voxelMm } = vox;
   const n = nx * ny * nz;
   const dist = new Float32Array(n).fill(Infinity);
   const idx = (ix, iy, iz) => (iz * ny + iy) * nx + ix;
 
-  // Seed: cells whose 6-neighborhood crosses the boundary.
-  for (let iz = 0; iz < nz; iz++) {
-    for (let iy = 0; iy < ny; iy++) {
-      for (let ix = 0; ix < nx; ix++) {
-        const i = idx(ix, iy, iz);
-        const v = inside[i];
-        if (
-          (ix > 0 && inside[i - 1] !== v) || (ix < nx - 1 && inside[i + 1] !== v) ||
-          (iy > 0 && inside[i - nx] !== v) || (iy < ny - 1 && inside[i + nx] !== v) ||
-          (iz > 0 && inside[i - nx * ny] !== v) || (iz < nz - 1 && inside[i + nx * ny] !== v)
-        ) {
-          dist[i] = 0.5 * voxelMm;
+  if (positions && faces) {
+    // Exact narrow band: for each triangle, visit cells in its dilated bbox.
+    const band = bandVoxels * voxelMm;
+    for (let t = 0; t < faces.length / 3; t++) {
+      const a = faces[t * 3] * 3, b = faces[t * 3 + 1] * 3, c = faces[t * 3 + 2] * 3;
+      const minX = Math.min(positions[a], positions[b], positions[c]) - band;
+      const maxX = Math.max(positions[a], positions[b], positions[c]) + band;
+      const minY = Math.min(positions[a + 1], positions[b + 1], positions[c + 1]) - band;
+      const maxY = Math.max(positions[a + 1], positions[b + 1], positions[c + 1]) + band;
+      const minZ = Math.min(positions[a + 2], positions[b + 2], positions[c + 2]) - band;
+      const maxZ = Math.max(positions[a + 2], positions[b + 2], positions[c + 2]) + band;
+      const ix0 = Math.max(0, Math.floor((minX - ox) / voxelMm - 0.5));
+      const ix1 = Math.min(nx - 1, Math.ceil((maxX - ox) / voxelMm - 0.5));
+      const iy0 = Math.max(0, Math.floor((minY - oy) / voxelMm - 0.5));
+      const iy1 = Math.min(ny - 1, Math.ceil((maxY - oy) / voxelMm - 0.5));
+      const iz0 = Math.max(0, Math.floor((minZ - oz) / voxelMm - 0.5));
+      const iz1 = Math.min(nz - 1, Math.ceil((maxZ - oz) / voxelMm - 0.5));
+      for (let iz = iz0; iz <= iz1; iz++) {
+        const pz = oz + (iz + 0.5) * voxelMm;
+        for (let iy = iy0; iy <= iy1; iy++) {
+          const py = oy + (iy + 0.5) * voxelMm;
+          for (let ix = ix0; ix <= ix1; ix++) {
+            const px = ox + (ix + 0.5) * voxelMm;
+            const d = pointTriangleDistance(px, py, pz, positions, a, b, c);
+            const i = idx(ix, iy, iz);
+            if (d < dist[i]) dist[i] = d;
+          }
+        }
+      }
+    }
+  } else {
+    // Fallback seeding: half a voxel at cells whose 6-neighborhood crosses
+    // the inside/outside boundary.
+    for (let iz = 0; iz < nz; iz++) {
+      for (let iy = 0; iy < ny; iy++) {
+        for (let ix = 0; ix < nx; ix++) {
+          const i = idx(ix, iy, iz);
+          const v = inside[i];
+          if (
+            (ix > 0 && inside[i - 1] !== v) || (ix < nx - 1 && inside[i + 1] !== v) ||
+            (iy > 0 && inside[i - nx] !== v) || (iy < ny - 1 && inside[i + nx] !== v) ||
+            (iz > 0 && inside[i - nx * ny] !== v) || (iz < nz - 1 && inside[i + nx * ny] !== v)
+          ) {
+            dist[i] = 0.5 * voxelMm;
+          }
         }
       }
     }
@@ -204,6 +290,6 @@ export function makeGridSDF(vox, dist) {
 export function buildImportedSDF(positions, faces, voxelMm) {
   const bounds = meshBounds(positions);
   const vox = voxelizeMesh(positions, faces, bounds, voxelMm);
-  const dist = distanceTransform(vox);
+  const dist = distanceTransform(vox, positions, faces);
   return { sdf: makeGridSDF(vox, dist), bounds };
 }

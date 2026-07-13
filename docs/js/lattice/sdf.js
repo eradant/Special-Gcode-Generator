@@ -126,13 +126,28 @@ export function makeWallField(grading, shapeF, zBottom, zTop) {
 //    shell of shellMm (0 = open-cell lattice showing at the surface) and
 //    optional solid top/bottom caps of capMm (bands measured from the
 //    shape's z extents).
-export function composePartSDF(shapeF, zBottom, zTop, { latticeType, cellMm, wallMm, wallFn, shellMm, capMm }) {
+export function composePartSDF(shapeF, zBottom, zTop, { latticeType, cellMm, wallMm, wallFn, shellMm, capMm, solidRegions }) {
+  const solids = solidRegions && solidRegions.length ? solidRegions : null;
+  // Solid keep-out regions: fully dense material (clipped to the shape) —
+  // for bolt bosses, bearing seats, threads. Unioned into whatever the
+  // branch below produced.
+  const applySolids = (d, s, x, y, z) => {
+    for (const r of solids) {
+      const sphere = Math.hypot(x - r.x, y - r.y, z - r.z) - r.radius;
+      const region = Math.max(s, sphere);
+      if (region < d) d = region;
+    }
+    return d;
+  };
+
   if (!latticeType || latticeType === "none") {
-    if (shellMm > 0) {
-      // hollow: keep a band of shellMm inside the surface
+    if (shellMm > 0 || solids) {
       return (x, y, z) => {
         const s = shapeF(x, y, z);
-        return Math.max(s, -(s + shellMm));
+        // hollow: keep a band of shellMm inside the surface (solid if shell 0)
+        let d = shellMm > 0 ? Math.max(s, -(s + shellMm)) : s;
+        if (solids) d = applySolids(d, s, x, y, z);
+        return d;
       };
     }
     return shapeF;
@@ -148,6 +163,7 @@ export function composePartSDF(shapeF, zBottom, zTop, { latticeType, cellMm, wal
       const capRegion = Math.min(z - (zBottom + capMm), (zTop - capMm) - z); // negative inside either cap band
       d = Math.min(d, Math.max(s, capRegion));
     }
+    if (solids) d = applySolids(d, s, x, y, z);
     return d;
   };
 }

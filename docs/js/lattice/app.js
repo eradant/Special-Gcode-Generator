@@ -249,7 +249,8 @@ const raycaster = new THREE.Raycaster();
 raycaster.firstHitOnly = true;
 const pointer = new THREE.Vector2();
 const markerGeometry = new THREE.SphereGeometry(1.6, 12, 8);
-const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff9a5e, wireframe: true });
+const densifyMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0xff9a5e, wireframe: true });
+const solidMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0xff5e6d, wireframe: true });
 
 function setEmphasisMode(on) {
   state.emphasisMode = on;
@@ -275,12 +276,13 @@ renderer.domElement.addEventListener("pointerdown", (evt) => {
   if (!hits.length) return;
   const local = latticeMesh.worldToLocal(hits[0].point.clone()); // print space (z-up)
   const radius = num("emphasisRadiusInput", 2, 60, 12);
-  state.emphasis.push({ x: local.x, y: local.y, z: local.z, radius });
-  const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+  const mode = document.getElementById("pointModeSelect").value; // densify | solid
+  state.emphasis.push({ x: local.x, y: local.y, z: local.z, radius, mode });
+  const marker = new THREE.Mesh(markerGeometry, mode === "solid" ? solidMarkerMaterial : densifyMarkerMaterial);
   marker.position.copy(local);
   markerRoot.add(marker);
   updateEmphasisButtons();
-  statusEl.textContent = `${state.emphasis.length} emphasis point${state.emphasis.length > 1 ? "s" : ""} — Generate to apply`;
+  statusEl.textContent = `${state.emphasis.length} point${state.emphasis.length > 1 ? "s" : ""} (orange = densify, red = solid) — Generate to apply`;
 });
 
 clearEmphasisBtn.addEventListener("click", () => {
@@ -334,16 +336,25 @@ function collectParams() {
     shellMm: num("shellInput", 0, 6, 1.2),
     capMm: num("capInput", 0, 6, 1),
     voxelMm: num("voxelInput", 0.3, 2, 0.7),
+    smoothPasses: num("smoothSlider", 0, 5, 2),
+    solidRegions: state.emphasis.filter((p) => p.mode === "solid"),
     grading: {
       wallMm,
       wallMaxMm: Math.max(wallMm, num("wallMaxInput", 0.4, 8, 2.4)),
       surfaceBias: num("surfaceBiasSlider", 0, 1, 0),
       surfaceDepthMm: num("biasDepthInput", 1, 30, 6),
       zGradient: num("zGradientSlider", -1, 1, 0),
-      emphasis: state.emphasis,
+      emphasis: state.emphasis.filter((p) => p.mode !== "solid"),
     },
   };
 }
+
+const smoothSlider = document.getElementById("smoothSlider");
+const smoothValue = document.getElementById("smoothValue");
+smoothSlider.addEventListener("input", () => {
+  const v = +smoothSlider.value;
+  smoothValue.textContent = v === 0 ? "projection only" : `${v} pass${v > 1 ? "es" : ""}`;
+});
 
 // ---------------------------------------------------------------------------
 // Generation via worker
